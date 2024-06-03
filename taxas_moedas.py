@@ -1,28 +1,28 @@
-'''
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-#                      Baixa os dados do SGS-Bacen                            #
-#                                                                             #
-# 1) Baixa o as do SGS-Bacen                                                  #
-# 2) Acumula as taxas Selic e CDI                                             #
-# 3) Salva os dados em arquivos TXT                                           #
-# 4) Arquivo em Excel serve como front para exibir e analisar os dados        #
-#                                                                             #
-# Versão: 2024-05-24                                                          #
-# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-'''
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+#             IMPORTA OS DADOS DO SGS-BACEM               #
+#                                                         #
+# Baixa os dados para um txt                              #
+# Um arquivo xls fica vinculado aos txt e serve de front  #
+#                                                         #
+# # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 
+'''
+Calendário: pip install pandas_market_calendars
+Dados: pip install sgs
+'''
 
 import sgs
 import numpy as np
-from datetime import date
+from datetime import date, timedelta
 import concurrent.futures
 import os
 import time
+import pandas_market_calendars as mcal
+from dateutil.relativedelta import relativedelta
 
 inicio = time.perf_counter()
 
 # datas
-
 data_inicial_cdi = '02/01/1998'
 data_inicial_selic = '04/01/2021'
 data_final = date.today().strftime('%d/%m/%Y')
@@ -36,13 +36,43 @@ def taxa_CDI(*knargs):
     taxa_CDI = sgs.dataframe([4389], start=dt1, end=dt2)
     taxa_CDI.rename(columns={4389: 'CDI_taxa'}, inplace=True)
     taxa_CDI.dropna(inplace=True)
-    taxa_CDI['CDI_fator'] = round( (1 + taxa_CDI['CDI_taxa'] / 100) ** (1 / 252), 9 )
-    taxa_CDI['CDI_acum'] = round ( np.cumprod(taxa_CDI['CDI_fator']), 9 )
+    taxa_CDI['CDI_fator'] = round( (1 + taxa_CDI['CDI_taxa'] / 100) ** (1 / 252), 8 )
+    #taxa_CDI['CDI_acum'] = round ( np.cumprod(taxa_CDI['CDI_fator']), 9 )
     taxa_CDI['Data'] = taxa_CDI.index
+    taxa_CDI['Status'] = 'Apurada'
     total_registro_cdi = len(taxa_CDI)
     index_cdi = np.array(range(total_registro_cdi))
     taxa_CDI.set_index(index_cdi, inplace=True)
-    taxa_CDI = taxa_CDI[['Data', 'CDI_taxa', 'CDI_fator', 'CDI_acum']]
+    taxa_CDI = taxa_CDI[['Data', 'CDI_taxa', 'CDI_fator', 'Status']]
+
+    # projeta valor até o final do mes
+    taxa_ult_dia = taxa_CDI[taxa_CDI['Data'] == taxa_CDI['Data'].max()]
+    data_final_df = taxa_ult_dia.iloc[0, 0]
+    taxa_final_df = taxa_ult_dia.iloc[0, 1]
+
+    # soma 1 mês, seta o dia para 1 e subtrai 1 dia
+    ultimo_dia_mes = (data_final_df + relativedelta(months=1)).replace(day=1) - timedelta(days=1)
+
+    # monta os dados projetados para incluir no DF
+    calendario = mcal.get_calendar("BMF")
+    dias_projetados = calendario.schedule(start_date=data_final_df + timedelta(days=1), end_date=ultimo_dia_mes)
+
+    for datas in dias_projetados.index:
+        novas_linhas = {
+            'Data': datas,
+            'CDI_taxa': taxa_final_df,
+            'CDI_fator': round((1 + taxa_final_df / 100) ** (1 / 252), 8),
+            'Status': 'Projetada'
+        }
+        taxa_CDI = taxa_CDI._append(novas_linhas, ignore_index=True)
+
+    #cria novas colunas com informções acessórias
+    taxa_CDI['CDI_acum'] = np.cumprod(taxa_CDI['CDI_fator'])
+    taxa_CDI['D+1'] = taxa_CDI['Data'].shift(-1)
+    taxa_CDI['ano-mes'] = taxa_CDI['Data'].dt.strftime('%Y') + '-' + taxa_CDI['Data'].dt.strftime('%m')
+
+    taxa_CDI = taxa_CDI[['ano-mes', 'D+1', 'Data', 'CDI_taxa', 'CDI_fator', 'CDI_acum', 'Status']]
+
 
     return taxa_CDI
 
@@ -53,13 +83,41 @@ def taxa_Selic(*knargs):
     taxa_Selic = sgs.dataframe([1178], start=dt1, end=dt2)
     taxa_Selic.rename(columns={1178: 'Selic_taxa'}, inplace=True)
     taxa_Selic.dropna(inplace=True)
-    taxa_Selic['Selic_fator'] = round ( (1 + taxa_Selic['Selic_taxa'] / 100) ** (1 / 252), 9 )
-    taxa_Selic['Selic_acum'] = round ( np.cumprod(taxa_Selic['Selic_fator']), 9 )
+    taxa_Selic['Selic_fator'] = round((1 + taxa_Selic['Selic_taxa'] / 100) ** (1 / 252), 8)
     taxa_Selic['Data'] = taxa_Selic.index
+    taxa_Selic['Status'] = 'Apurada'
     total_registro_selic = len(taxa_Selic)
     index_selic = np.array(range(total_registro_selic))
     taxa_Selic.set_index(index_selic, inplace=True)
-    taxa_Selic = taxa_Selic[['Data', 'Selic_taxa', 'Selic_fator', 'Selic_acum']]
+    taxa_Selic = taxa_Selic[['Data', 'Selic_taxa', 'Selic_fator', 'Status']]
+
+    # projeta valor até o final do mes
+    taxa_Selic_ult_dia = taxa_Selic[taxa_Selic['Data'] == taxa_Selic['Data'].max()]
+    data_final_df = taxa_Selic_ult_dia.iloc[0, 0]
+    taxa_final_df = taxa_Selic_ult_dia.iloc[0, 1]
+
+    # soma 1 mês, seta o dia para 1 e subtrai 1 dia
+    ultimo_dia_mes = (data_final_df + relativedelta(months=1)).replace(day=1) - timedelta(days=1)
+
+    # monta os dados projetados para incluir no DF
+    calendario = mcal.get_calendar("BMF")
+    dias_projetados = calendario.schedule(start_date=data_final_df + timedelta(days=1), end_date=ultimo_dia_mes)
+
+    for datas in dias_projetados.index:
+        novas_linhas = {
+            'Data': datas,
+            'Selic_taxa': taxa_final_df,
+            'Selic_fator': round((1 + taxa_final_df / 100) ** (1 / 252), 8),
+            'Status': 'Projetada'
+        }
+        taxa_Selic = taxa_Selic._append(novas_linhas, ignore_index=True)
+
+    #cria novas colunas com informções acessórias
+    taxa_Selic['Selic_acum'] = np.cumprod(taxa_Selic['Selic_fator'])
+    taxa_Selic['D+1'] = taxa_Selic['Data'].shift(-1)
+    taxa_Selic['ano-mes'] = taxa_Selic['Data'].dt.strftime('%Y') + '-' + taxa_Selic['Data'].dt.strftime('%m')
+
+    taxa_Selic = taxa_Selic[['ano-mes', 'D+1', 'Data', 'Selic_taxa', 'Selic_fator', 'Selic_acum', 'Status']]
 
     return taxa_Selic
 
@@ -136,7 +194,7 @@ if __name__ == '__main__':
     max_workers = os.cpu_count()
 
     # Executa as functions usando o multi-processamento
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         cod1 = executor.submit(taxa_CDI, data_inicial_cdi, data_final)
         cod2 = executor.submit(taxa_Selic, data_inicial_selic, data_final)
         cod3 = executor.submit(moedas_bacen, data_inicial_cdi, data_final)
@@ -160,6 +218,7 @@ if __name__ == '__main__':
         df_ind_tr.sort_values(by=['Data'], ascending=[True]).to_csv('txt\Ind_TR.txt', sep=';', index=False, decimal=',')
         df_ind_endiv.sort_values(by=['Data'], ascending=[True]).to_csv('txt\Ind_Endiv.txt', sep=';', index=False, decimal=',')
 
+
         print('Processamento concluido.')
 
         fim = time.perf_counter()
@@ -168,4 +227,5 @@ if __name__ == '__main__':
         tempo_total = fim - inicio
 
         print(f"Tempo de execução: {round(tempo_total, 3)} segundos")
+        print(f'\nNr de cpu: {max_workers}')
 
